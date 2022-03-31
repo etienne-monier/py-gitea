@@ -325,6 +325,7 @@ class Repository(ApiObject):
     REPO_IS_COLLABORATOR = """/repos/%s/%s/collaborators/%s"""  # <owner>, <reponame>, <username>
     REPO_SEARCH = """/repos/search/%s"""  # <reponame>
     REPO_BRANCHES = """/repos/%s/%s/branches"""  # <owner>, <reponame>
+    REPO_TAGS = """/repos/%s/%s/tags"""  # <owner>, <reponame>
     REPO_ISSUES = """/repos/{owner}/{repo}/issues"""  # <owner, reponame>
     REPO_DELETE = """/repos/%s/%s"""  # <owner>, <reponame>
     REPO_TIMES = """/repos/%s/%s/times"""  # <owner>, <reponame>
@@ -371,6 +372,42 @@ class Repository(ApiObject):
         "website",
     }
 
+    def _get_commit_dict_by_ref(self, ref):
+        """Return a commit dictionary from a git ref
+
+        Parameters
+        ----------
+        ref : str
+            The git ref (e.g. SHA1)
+
+        Returns
+        -------
+        dict
+            The commit information
+        """
+        return self.gitea.requests_get(
+                "/repos/%s/%s/git/commits/%s" % (
+                    self.owner.username, self.name, ref
+                )
+            )
+
+    def _init_tag_with_commit(self, tag_dict):
+        """Initialize a Tag object with the right commit object
+
+        Parameters
+        ----------
+        tag_dict : str
+            The tag dictionary information (as returned by the GET request)
+
+        Returns
+        -------
+        Tag
+            The correspunding Tag object
+        """
+        sha = tag_dict["commit"]["sha"]
+        tag_dict["commit"] = self._get_commit_dict_by_ref(sha)
+        return Tag.parse_response(self.gitea, tag_dict)
+
     def get_branches(self) -> List['Branch']:
         """Get all the Branches of this Repository."""
         results = self.gitea.requests_get(
@@ -404,6 +441,27 @@ class Repository(ApiObject):
             )
             results = []
         return [Commit.parse_response(self.gitea, result) for result in results]
+
+    def get_tags(self):
+        try:
+            results = self.gitea.requests_get(
+                Repository.REPO_TAGS % (self.owner.username, self.name)
+            )
+        except NotFoundException:
+            results = []
+
+        return [self._init_tag_with_commit(result) for result in results]
+
+    def get_tag_by_name(self, name: str) -> "Tag":
+        try:
+            result = self.gitea.requests_get(
+                (Repository.REPO_TAGS + f"/{name}") % (
+                    self.owner.username, self.name
+                )
+            )
+        except NotFoundException:
+            return None
+        return self._init_tag_with_commit(result)
 
     def get_issues_state(self, state) -> List["Issue"]:
         """Get issues of state Issue.open or Issue.closed of a repository."""
@@ -623,6 +681,30 @@ class Commit(ReadonlyApiObject):
         cls._initialize(gitea, api_object, result)
         # inner_commit for legacy reasons
         Commit._add_read_property("inner_commit", commit_cache, api_object)
+        return api_object
+
+
+class Tag(ReadonlyApiObject):
+
+    def __init__(self, gitea):
+        super().__init__(gitea)
+
+    _fields_to_parsers = {
+        "commit": lambda gitea, c: Commit.parse_response(gitea, c)
+    }
+
+    def __eq__(self, other):
+        if not isinstance(other, Tag):
+            return False
+        return self.commit == other.commit
+
+    def __hash__(self):
+        return hash(self.sha)
+
+    @classmethod
+    def parse_response(cls, gitea, result) -> 'Tag':
+        api_object = cls(gitea)
+        cls._initialize(gitea, api_object, result)
         return api_object
 
 
